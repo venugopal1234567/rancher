@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"net/http"
 	_ "net/http/pprof"
@@ -27,6 +30,24 @@ var (
 )
 
 func main() {
+	seed, err := getSeed()
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	transaction, err := postTransaction(seed)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+	transactionResp, err := getTransaction(*transaction.ID)
+	if err != nil {
+		log.Fatal(err)
+		return
+	}
+
+	fmt.Println(transactionResp)
+
 	management.RegisterPasswordResetCommand()
 	management.RegisterEnsureDefaultAdminCommand()
 	if reexec.Init() {
@@ -225,4 +246,125 @@ func run(cli *cli.Context, cfg rancher.Options) error {
 	}
 
 	return server.ListenAndServe(ctx)
+}
+
+const (
+	bigchainClientHost = "http://bc-py-client"
+)
+
+func getSeed() (string, error) {
+	host := fmt.Sprintf("%s/get_seed", bigchainClientHost)
+	resp, err := http.Get(host)
+	if err != nil {
+		return "", nil
+	}
+	defer resp.Body.Close()
+
+	bodyBytes, _ := ioutil.ReadAll(resp.Body)
+	var getSeedResp GetSeedResp
+	err = json.Unmarshal(bodyBytes, &getSeedResp)
+	if err != nil {
+		return "", nil
+	}
+	return getSeedResp.Data.Seed, nil
+}
+
+func postTransaction(seed string) (*Transaction, error) {
+	metadata := make(map[string]interface{})
+	metadata["test"] = "hello world3"
+	createTransactionReq := CreateTransactionReq{
+		Asset: Asset{
+			Data: metadata,
+		},
+		MetaData: metadata,
+		Seed:     seed,
+	}
+	jsonReq, err := json.Marshal(createTransactionReq)
+	host := fmt.Sprintf("%s/create_transaction", bigchainClientHost)
+	resp, err := http.Post(host, "application/json; charset=utf-8", bytes.NewBuffer(jsonReq))
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+	bodyBytes, _ := ioutil.ReadAll(resp.Body)
+	var transaction Transaction
+	err = json.Unmarshal(bodyBytes, &transaction)
+	if err != nil {
+		return nil, err
+	}
+	return &transaction, nil
+}
+
+func getTransaction(transactionID string) ([]Transaction, error) {
+	host := fmt.Sprintf("%s/get_transaction/%s", bigchainClientHost, transactionID)
+	resp, err := http.Get(host)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	bodyBytes, _ := ioutil.ReadAll(resp.Body)
+	var transaction []Transaction
+	err = json.Unmarshal(bodyBytes, &transaction)
+	if err != nil {
+		return nil, err
+	}
+	return transaction, nil
+}
+
+type GetSeedResp struct {
+	Result string `json:"result"`
+	Data   struct {
+		Seed string `json:"seed"`
+	} `json:"data"`
+}
+
+type CreateTransactionReq struct {
+	Seed     string   `json:"seed"`
+	Asset    Asset    `json:"asset"`
+	MetaData Metadata `json:"metaData"`
+}
+
+type Transaction struct {
+	Asset     Asset    `json:"asset"`
+	ID        *string  `json:"id"`
+	Inputs    []Input  `json:"inputs"`
+	Metadata  Metadata `json:"metadata"`
+	Operation string   `json:"operation"`
+	Outputs   []Output `json:"outputs"`
+	Version   string   `json:"version"`
+}
+
+type Input struct {
+	Fulfillment  *string         `json:"fulfillment"`
+	Fulfills     *OutputLocation `json:"fulfills"`
+	OwnersBefore []string        `json:"owners_before"`
+}
+
+type Output struct {
+	Amount     string    `json:"amount,omitempty"`
+	Condition  Condition `json:"condition,omitempty"`
+	PublicKeys []string  `json:"public_keys,omitempty"`
+}
+
+type Asset struct {
+	Data map[string]interface{} `json:"data,omitempty"`
+	ID   *string                `json:"id,omitempty"`
+}
+
+type Metadata map[string]interface{}
+
+type OutputLocation struct {
+	TransactionID string `json:"transaction_id,omitempty"`
+	OutputIndex   int64  `json:"output_index,omitempty"`
+}
+
+type Condition struct {
+	Details ConditionDetail `json:"details,omitempty"`
+	Uri     string          `json:"uri,omitempty"`
+}
+
+type ConditionDetail struct {
+	PublicKey string `json:"public_key,omitempty"`
+	Type      string `json:"type,omitempty"`
 }
